@@ -1,0 +1,16 @@
+{
+  "huutokaupat_db": "huutokaupat.db",
+  "rows": 25922,
+  "end_min": "2026-05-05",
+  "end_max": "2026-10-21",
+  "built": "2026-10-22",
+  "nettiauto_rows": 389,
+  "analysis_n": 21911,
+  "make_models": 1085,
+  "ols_n": 21593,
+  "ols_groups": 767,
+  "price_median": 2020.0,
+  "accepted_share": 0.4372689516681119,
+  "nettiauto_n": 324,
+  "nettiauto_ols_n": 202
+}
