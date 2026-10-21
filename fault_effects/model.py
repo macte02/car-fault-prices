@@ -541,14 +541,19 @@ def value_band(v: pd.Series) -> pd.Series:
     return pd.cut(v, [b[0] for b in BANDS] + [np.inf], right=False, labels=BAND_LABELS).astype(str)
 
 
-def band_effects(df: pd.DataFrame) -> pd.DataFrame:
+def band_effects(df: pd.DataFrame, extra: list[str] | None = None) -> pd.DataFrame:
     """Fault effects estimated separately in each clean-value band (fault×band
-    interactions in one FE model; controls and admin flags shared)."""
+    interactions in one FE model; controls and admin flags shared). `extra`
+    adds ad-hoc fault flags (columns of df) to the by-type model and reports
+    only those."""
     d, _ = fill_numeric(df)
     Xc, _ = controls(d)
     band_dum = pd.DataFrame({f"band={b}": (d.band == b).astype(float) for b in BAND_LABELS[1:]}, index=d.index)
     rows = []
-    for spec, report in ((SPEC_A, ["warning_light_any"]), (SPEC_B, [f for f in SPEC_B if f not in NON_FAULTS])):
+    specs = ((SPEC_A, ["warning_light_any"]), (SPEC_B, [f for f in SPEC_B if f not in NON_FAULTS]))
+    if extra:
+        specs = ((SPEC_B + list(extra), list(extra)),)
+    for spec, report in specs:
         faults = [f for f in spec if f not in NON_FAULTS]
         inter = pd.DataFrame({f"{f}@{b}": d[f].astype(float) * (d.band == b) for f in faults for b in BAND_LABELS},
                              index=d.index)
