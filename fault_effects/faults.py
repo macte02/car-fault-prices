@@ -250,6 +250,9 @@ BELT_DONE = r"vaihdettu|vaihettu|uusittu|vaihdettiin|vaihto tehty|tehty|replaced
 OTHER_PART = (r"kytkin|kytkime|jarru|rengas|renkaa|akku|iskari|iskunvaim|laakeri|\blasi|ilmastoin|pakoputk|"
               r"\bkori\b|vaihteist|ruost|katsast|leima|kayttohihna|apulaitehihna|nasta|tuulilas|pyyhkij|"
               r"polttimo|lamppu|oljynvaihto|\bhuolto\b|jakoketju")
+ENGINE_X = (r"lammitin|tuki|tyyny|kiinnik|suoja|pelti(?!n alla)|tuuletin|vesipumppu|anturi|valo|"
+            r"ohjausyks|letku|startti|puhallin|ilmastoin|ketjukotelo|(?<!kansi)tiivist|hihna|"
+            r"tunnistin|turvavyo|merkkiaan")
 WS_CRACK = r"halke(?!amato)\w*|\bhalki\b|halkiny\w*|\bsaro\w*|murtum\w*|crack\w*|haljen\w*"
 RUSTW = r"ruost\w*|\brust\w*|lahon\w*|lahoa\w*|korroosi\w*"
 RUST_SEVERE_CUE = (r"reik\w*|reiat|puhki|lapi|rakenteel\w*|kantav\w*|runko\w*|kynnys\w*|kynnyks\w*|kotelo\w*|"
@@ -290,7 +293,9 @@ RULES: list[Rule] = [
                            r"kytkin\w* (?:\w+ ){0,3}?(?:ilmattava|ilmata|ilmaa\b)|"
                            r"kytkin\w* (?:\w+ ){0,2}?elamaa nahnyt"),
          neg_pre=False, neg_post=False, exclude=R(r"magneetti|ilmastoin|kompur|kompress")),
-    Rule("engine_major", R(r"moottori ?vik(?!\w*valo)\w*|moottori ?vauri\w*|moottori ?rikko\w*|"
+    # Engine damage is split by severity: an outright failure / rebuild-needed
+    # statement vs. a knocking noise only. engine_major = either (finalize()).
+    Rule("engine_failure", R(r"moottori ?vik(?!\w*valo)\w*|moottori ?vauri\w*|moottori ?rikko\w*|"
                            r"moottori ?remont\w* (?:\w+ )?(?:edessa|tarpeen|tulossa|ajankohtai\w*)|"
                            r"jakoketju\w* (?:\w+ ){0,2}?(?:hypan\w*|hyppa\w*|katken\w*|poikki)|"
                            r"moottori\w* (?:on |aivan |taysin |ihan |kokonaan |pahasti )?(?:rikki|hajon\w*|leikan\w*|"
@@ -302,14 +307,13 @@ RULES: list[Rule] = [
                            r"puristu\w* (?:\w+ ){0,2}(?:heikko|huono|alhai\w*|matala\w*|puuttuu)|head gasket|"
                            r"engine (?:damage|failure|knock\w*|blown|broken|seized)|blown engine|rod knock|"
                            r"vetta oljy\w*|oljy\w* (?:seassa )?vett\w*|majoneesi|vaihtomoottori|"
-                           r"moottori\w* (?:\w+ ){0,1}vaihdettava|moottorin vaihto|"
-                           r"(?:moottori|kone)\w* (?:\w+ ){0,3}?(?:kolkot\w*|kolkut\w*|kalke\w*|nakut\w*)"),
-         exclude=R(r"lammitin|tuki|tyyny|kiinnik|suoja|pelti(?!n alla)|tuuletin|vesipumppu|anturi|valo|"
-                   r"ohjausyks|letku|startti|puhallin|ilmastoin|ketjukotelo|(?<!kansi)tiivist|hihna|"
-                   r"tunnistin|turvavyo|merkkiaan")),
-    # A knock counts as engine damage only when it is placed in the engine;
+                           r"moottori\w* (?:\w+ ){0,1}vaihdettava|moottorin vaihto"),
+         exclude=R(ENGINE_X)),
+    Rule("engine_knock", R(r"(?:moottori|kone)\w* (?:\w+ ){0,3}?(?:kolkot\w*|kolkut\w*|kalke\w*|nakut\w*)"),
+         exclude=R(ENGINE_X)),
+    # A knock counts only when it is placed in the engine;
     # "nakuttaa rattia käännettäessä" is a drive-shaft joint.
-    Rule("engine_major", R(r"nakutt\w*|nakutu\w*|kolkutt\w*|kolkotu\w*|kolkott\w*"),
+    Rule("engine_knock", R(r"nakutt\w*|nakutu\w*|kolkutt\w*|kolkotu\w*|kolkott\w*"),
          require=R(r"moottor|\bkone|konepell|tyhjakay|kylmana|kaynnis|engine"),
          exclude=R(r"ratti|rattia|kaanta|kaanto|kaannett|nivel|murros|alusta|startti|turvavyo|merkkiaan|"
                    r"puhallin|ilmastoin|jousi|iskari|vetoakseli|etupaa|takapaa|keula|pyora")),
@@ -367,9 +371,9 @@ RULES: list[Rule] = [
     # counted as cosmetic.
     Rule("rust_severe", R(near(RUSTW, RUST_SEVERE_CUE, 5) +
                           r"|ruostereik\w*|puhkiruost\w*|lapiruost\w*|ruostunut (?:puhki|lapi)|\blahon\w*"),
-         scope="sentence", neg_pre=True, neg_post=True,
+         scope="sentence", neg_pre=True, neg_post=True, neg_inside=True,
          exclude=R(r"pintaruost\w*(?!.*(?:reik|puhki|kotelo|pohja))|keskikotelo|konsoli|kivenhakkau|kivenisk|"
-                   r"ruosteeto|ruosteetto|ruostesuoj|(?:pohja|kori|runko)\w* (?:\w+ ){0,3}?(?:hyva|kova|fiksu|"
+                   r"ruosteeto|ruosteetto|ruoste ?suoj|(?:pohja|kori|runko)\w* (?:\w+ ){0,3}?(?:hyva|kova|fiksu|"
                    r"siisti|ehja|kunnossa|terve|massat|suojat)|\bolisi\b|korjatt(?:u|iin)\b")),
     Rule("crash_damage", R(r"kolar(?!iton|ivapa|oimato)\w*|kolaroi(?!mato)\w*|tormay\w*|tormann\w*|tormas\w*|"
                            r"peltivauri\w*|korivauri\w*|rakennevauri\w*|copart|"
@@ -391,7 +395,8 @@ RULES: list[Rule] = [
     # bumper / mirror / dashboard is not counted. (The Huutokaupat windshield
     # answer is already about the windshield and uses WS_FIELD_RULE below.)
     Rule("windshield_crack", R(near(r"tuulilas\w*|\blasi\w*|windshield|windscreen", WS_CRACK, 4)),
-         exclude=R(r"puskur|peili|kojelau|kojetau|umpio|ajovalo|lokasuoj|sivulasi|takalasi|kattoluuk")),
+         exclude=R(r"puskur|peili|kojelau|kojetau|umpio|ajovalo|lokasuoj|sivulasi|taka ?lasi|kattoluuk|"
+                   r"korjattu"), neg_inside=True),
     Rule("water_ingress", R(r"kosteu\w*|kostea\w*|vesivuot\w*|vetta (?:\w+ ){0,3}?(?:sisalle|sisaan|lattia\w*|"
                             r"matto\w*|tulee|kertyy|keraantyy)|vuotaa sisaan|vuotaa vetta|homee\w*|homeh\w*|"
                             r"\bhome\b|homeen|mark\w* (?:matot|matto|lattia)|water (?:leak|ingress)|"
@@ -675,6 +680,7 @@ def finalize(res: FlagResult) -> FlagResult:
     # "changed in 2016, so by age it's overdue" is due, not done.
     if f.get("timing_belt_due"):
         f["timing_belt_done"] = 0
+    f["engine_major"] = int(bool(f.get("engine_failure") or f.get("engine_knock")))
     for k in ALL_FLAGS:
         f.setdefault(k, 0)
     return res
@@ -682,7 +688,7 @@ def finalize(res: FlagResult) -> FlagResult:
 
 ADMIN_FLAGS = ["deregistered", "no_insurance", "no_service_book", "import_car", "reregistered",
                "unpaid_tax", "one_key", "no_summer_tyres", "no_winter_tyres", "emissions_modified"]
-ALL_FLAGS = (["warning_light_any"] + LIGHT_FLAGS + TEXT_FLAGS + ["rust_cosmetic"] + ADMIN_FLAGS)
+ALL_FLAGS = (["warning_light_any"] + LIGHT_FLAGS + TEXT_FLAGS + ["rust_cosmetic", "engine_major"] + ADMIN_FLAGS)
 ALL_FLAGS = list(dict.fromkeys(ALL_FLAGS))
 
 # Human-readable labels for the report.
@@ -710,12 +716,15 @@ LABELS = {
     "timing_chain_issue": "Timing-chain noise / stretched",
     "gearbox_issue": "Gearbox problem",
     "clutch_issue": "Clutch / flywheel worn",
-    "engine_major": "Major engine damage (knock, head gasket, …)",
+    "engine_major": "Engine damage, any (failure or knock)",
+    "engine_failure": "Engine failure / needs rebuild (head gasket, blown, …)",
+    "engine_knock": "Engine knocking noise",
     "engine_running_issue": "Engine running issue (misfire, smoke, turbo, EGR, …)",
     "non_runner": "Won't start / won't move",
     "not_roadworthy": "Not roadworthy / driving ban",
     "inspection_invalid": "Inspection (katsastus) not valid",
     "inspection_failed": "Inspection failed (hylätty)",
+    "inspection_lapsed": "Inspection lapsed (not failed)",
     "rust": "Rust (any)",
     "rust_cosmetic": "Rust, cosmetic only",
     "rust_severe": "Rust, structural / holes / sills",

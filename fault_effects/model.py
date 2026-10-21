@@ -47,7 +47,7 @@ KM_KNOTS = (100, 200, 300, 400)   # thousand km
 
 # Faults derived from text / checklist that we report effects for.
 TEXT_MODEL_FLAGS = [
-    "timing_belt_due", "timing_chain_issue", "gearbox_issue", "clutch_issue", "engine_major",
+    "timing_belt_due", "timing_chain_issue", "gearbox_issue", "clutch_issue", "engine_failure", "engine_knock",
     "engine_running_issue", "non_runner", "not_roadworthy", "inspection_lapsed", "inspection_failed",
     "rust_cosmetic", "rust_severe", "crash_damage", "body_dents", "paint_damage", "windshield_crack",
     "water_ingress", "interior_damage", "ac_issue", "oil_leak", "coolant_issue", "brakes_issue",
@@ -61,13 +61,14 @@ SPEC_A = ["warning_light_any"] + TEXT_MODEL_FLAGS + OTHER_FLAGS
 SPEC_B = LIGHT_TYPES + TEXT_MODEL_FLAGS + OTHER_FLAGS
 
 # "Major" checked faults used to define clean controls for matching.
-MATCH_FAULTS = ["warning_light_any", "timing_belt_due", "gearbox_issue", "clutch_issue", "engine_major",
+MATCH_FAULTS = ["warning_light_any", "timing_belt_due", "gearbox_issue", "clutch_issue", "engine_failure",
+                "engine_knock",
                 "engine_running_issue", "non_runner", "not_roadworthy", "inspection_lapsed",
                 "inspection_failed", "rust_severe", "crash_damage", "windshield_crack", "project_for_parts",
                 "water_ingress", "coolant_issue", "dpf_issue"]
 
 SEG_FLAGS = ["warning_light_any", "light_engine", "light_abs_esp", "light_airbag", "light_dpf",
-             "light_glow_plug", "timing_belt_due", "gearbox_issue", "clutch_issue", "engine_major",
+             "light_glow_plug", "timing_belt_due", "gearbox_issue", "clutch_issue", "engine_failure",
              "non_runner", "not_roadworthy", "inspection_lapsed", "inspection_failed", "rust_cosmetic",
              "rust_severe", "crash_damage", "windshield_crack"]
 
@@ -155,13 +156,16 @@ def controls(d: pd.DataFrame, levels: dict | None = None) -> tuple[pd.DataFrame,
 class FEOLS:
     """OLS with one absorbed fixed effect.
 
-    cov="cluster" clusters on the FE groups (main effects: a flag varies across
-    hundreds of make×models). cov="hc1" is for terms identified inside one or
-    two FE groups (segment interactions): there the within-cluster score of the
-    term is zero by construction, so a clustered SE collapses toward 0.
+    Standard errors (cov="max", the default) are the larger of the make×model-
+    clustered and the heteroskedasticity-robust (HC1) ones, per coefficient.
+    Clustering is the right default when a flag varies across hundreds of
+    make×models, but for a term identified inside one or a few FE groups
+    (segment or price-band interactions) the within-cluster score of that term
+    is ~0 by construction and a clustered SE collapses; HC1 then binds.
+    `self.covs` keeps both matrices so derived quantities can take the larger.
     """
 
-    def __init__(self, cov: str = "cluster"):
+    def __init__(self, cov: str = "max"):
         self.cov_type = cov
 
     def fit(self, X: pd.DataFrame, y: pd.Series, g: pd.Series):
@@ -173,14 +177,25 @@ class FEOLS:
         self.dropped = list(Xd.columns[~nz])
         Xd = Xd.loc[:, nz]
         codes = pd.factorize(g)[0]
-        if self.cov_type == "cluster":
-            self.res = sm.OLS(yd.values, Xd.values).fit(cov_type="cluster", cov_kwds={"groups": codes})
-        else:
-            self.res = sm.OLS(yd.values, Xd.values).fit(cov_type="HC1")
         self.cols = list(Xd.columns)
+        ols = sm.OLS(yd.values, Xd.values)
+        fits = []
+        if self.cov_type in ("cluster", "max"):
+            fits.append(ols.fit(cov_type="cluster", cov_kwds={"groups": codes}))
+        if self.cov_type in ("hc1", "max"):
+            fits.append(ols.fit(cov_type="HC1"))
+        self.res = fits[0]
         self.beta = pd.Series(self.res.params, index=self.cols)
-        self.cov = pd.DataFrame(self.res.cov_params(), index=self.cols, columns=self.cols)
-        self.se = pd.Series(self.res.bse, index=self.cols)
+        self.covs = [pd.DataFrame(f.cov_params(), index=self.cols, columns=self.cols) for f in fits]
+        se = np.max([f.bse for f in fits], axis=0)
+        self.se = pd.Series(se, index=self.cols)
+        # Covariance whose diagonal matches the reported SEs (correlations from the first fit).
+        c0 = self.covs[0].values
+        d0 = np.sqrt(np.clip(np.diag(c0), 1e-30, None))
+        corr = c0 / np.outer(d0, d0)
+        self.cov = pd.DataFrame(corr * np.outer(se, se), index=self.cols, columns=self.cols)
+        from scipy.stats import norm
+        self.pvalues = pd.Series(2 * norm.sf(np.abs(self.beta.values / se)), index=self.cols)
         fe = (y - X[self.cols] @ self.beta).groupby(g.values).mean()
         self.fe = fe.to_dict()
         resid = y - (X[self.cols] @ self.beta + g.map(self.fe))
@@ -189,6 +204,11 @@ class FEOLS:
         self.used_index = y.index
         return self
 
+    def lin_se(self, w: pd.Series) -> float:
+        """SE of the linear combination w·β — the larger across covariance estimators."""
+        idx = list(w.index)
+        return float(max(np.sqrt(w.values @ C.loc[idx, idx].values @ w.values) for C in self.covs))
+
     def predict_log(self, X: pd.DataFrame, g: pd.Series, fallback: float | None = None) -> pd.Series:
         fe = g.map(self.fe)
         if fallback is not None:
@@ -196,7 +216,8 @@ class FEOLS:
         return X.reindex(columns=self.cols, fill_value=0.0) @ self.beta + fe
 
 
-def ols_effects(df: pd.DataFrame, flags: list[str], fe_col: str = "make_model") -> tuple[pd.DataFrame, FEOLS]:
+def ols_effects(df: pd.DataFrame, flags: list[str], fe_col: str = "make_model",
+                clean: pd.Series | None = None) -> tuple[pd.DataFrame, FEOLS]:
     d, med = fill_numeric(df)
     Xc, lv = controls(d)
     X = pd.concat([Xc, d[flags].astype(float)], axis=1)
@@ -205,6 +226,10 @@ def ols_effects(df: pd.DataFrame, flags: list[str], fe_col: str = "make_model") 
     used = d.loc[m.used_index]
     Xu = X.loc[m.used_index]
     yhat = m.predict_log(Xu, used[fe_col])
+    fcols = [c for c in flags if c in m.beta.index and c not in NON_FAULTS]
+    tot = pd.Series(used[fcols].values @ m.beta[fcols].values, index=used.index)
+    clean_u = clean_prices(m, used, yhat, tot, clean)
+    full = clean_u * np.exp(tot)          # each car's expected price as it is (all its faults)
     rows = []
     for f in flags:
         treated = used[f] == 1
@@ -212,16 +237,54 @@ def ols_effects(df: pd.DataFrame, flags: list[str], fe_col: str = "make_model") 
         row = {"flag": f, "n_faulty": n_t, "n_total": int(len(used))}
         if f in m.beta.index and n_t > 0:
             b, se = m.beta[f], m.se[f]
-            # Counterfactual clean price of the faulty cars (Duan smearing).
-            p0 = np.exp(yhat[treated] - b) * m.smear
-            row.update(b=b, se=se, p=float(m.res.pvalues[m.cols.index(f)]),
+            p0 = full[treated] * np.exp(-b)  # the same cars with only this fault removed
+            row.update(b=b, se=se, p=float(m.pvalues[f]),
                        pct=np.expm1(b), pct_lo=np.expm1(b - 1.96 * se), pct_hi=np.expm1(b + 1.96 * se),
                        clean_price_median=float(np.median(p0)), actual_price_median=float(used.price[treated].median()),
                        eur=float(np.mean(p0) * np.expm1(b)),
                        eur_lo=float(np.mean(p0) * np.expm1(b - 1.96 * se)),
                        eur_hi=float(np.mean(p0) * np.expm1(b + 1.96 * se)))
+            if f not in NON_FAULTS:
+                row.update(total_discount(m, used.loc[treated, fcols], fcols, clean_u[treated]))
         rows.append(row)
     return pd.DataFrame(rows), m
+
+
+def clean_prices(m: "FEOLS", used: pd.DataFrame, yhat: pd.Series, tot: pd.Series,
+                 clean: pd.Series | None) -> pd.Series:
+    """Expected price of each car with every disclosed fault removed.
+
+    With `clean` (the LightGBM out-of-fold clean value) the euro conversion uses
+    the better-calibrated model: the hedonic OLS over-predicts newer, pricier
+    cars (one set of year dummies and one mileage curve for every model), by
+    ~25–40% in the top value bands. Without it, the OLS fit is used."""
+    if clean is not None:
+        c = clean.reindex(used.index)
+        return c.fillna(np.exp(yhat - tot) * m.smear)
+    return np.exp(yhat - tot) * m.smear
+
+
+# Flags that describe the car / paperwork rather than a fault; they stay part
+# of the "clean" price when computing a total discount.
+NON_FAULTS = set(OTHER_FLAGS)
+
+
+def total_discount(m: "FEOLS", T: pd.DataFrame, coef_cols: list[str], clean: pd.Series) -> dict:
+    """Total discount of these cars vs. the same cars with *every* disclosed
+    fault removed: mean of Σ_k β_k·x_ik, delta-method CI (gradient = mean x).
+    T's columns are the fault indicators, in the same order as coef_cols;
+    `clean` is each car's price with every fault removed."""
+    tot_i = T.values @ m.beta[coef_cols].values
+    tot = float(tot_i.mean())
+    tse = m.lin_se(pd.Series(T.values.mean(axis=0), index=coef_cols))
+    clean = clean.values
+    return dict(total_pct=np.expm1(tot), total_pct_lo=np.expm1(tot - 1.96 * tse),
+                total_pct_hi=np.expm1(tot + 1.96 * tse),
+                total_eur=float(np.mean(clean * np.expm1(tot_i))),
+                total_eur_lo=float(np.mean(clean) * np.expm1(tot - 1.96 * tse)),
+                total_eur_hi=float(np.mean(clean) * np.expm1(tot + 1.96 * tse)),
+                fully_clean_price_median=float(np.median(clean)),
+                other_faults_mean=float(T.values.sum(axis=1).mean() - 1))
 
 
 # ─────────────────────────── cross-validation ───────────────────────────
@@ -396,9 +459,12 @@ def segment_effects(df: pd.DataFrame, overall: pd.DataFrame) -> pd.DataFrame:
                 eligible.append(s)
         inter = pd.DataFrame({f"{f}*{s}": d[f] * (d.segment == s) for s in eligible}, index=d.index)
         X = pd.concat([base, inter], axis=1)
-        m = FEOLS(cov="hc1").fit(X, d.log_price, d.make_model)
+        m = FEOLS().fit(X, d.log_price, d.make_model)
         used = d.loc[m.used_index]
         yhat = m.predict_log(X.loc[m.used_index], used.make_model)
+        fcols = [c for c in list(spec) + list(inter.columns) if c in m.beta.index and c not in NON_FAULTS]
+        tot = pd.Series(X.loc[m.used_index, fcols].values @ m.beta[fcols].values, index=used.index)
+        full = clean_prices(m, used, yhat, tot, used.get("clean_value")) * np.exp(tot)
         b0 = m.beta.get(f, np.nan)
         thetas = {}
         for s in eligible:
@@ -406,8 +472,7 @@ def segment_effects(df: pd.DataFrame, overall: pd.DataFrame) -> pd.DataFrame:
             if col not in m.beta.index:
                 continue
             th = b0 + m.beta[col]
-            var = m.cov.loc[f, f] + m.cov.loc[col, col] + 2 * m.cov.loc[f, col]
-            thetas[s] = (th, np.sqrt(var))
+            thetas[s] = (th, m.lin_se(pd.Series([1.0, 1.0], index=[f, col])))
         # Empirical-Bayes shrinkage toward the pooled effect.
         if len(thetas) >= 3:
             th = np.array([v[0] for v in thetas.values()])
@@ -425,7 +490,7 @@ def segment_effects(df: pd.DataFrame, overall: pd.DataFrame) -> pd.DataFrame:
                 wgt = tau2 / (tau2 + se ** 2) if tau2 > 0 else 0.0
                 shr = pooled + wgt * (th - pooled)
                 treated = (used.segment == s) & (used[f] == 1)
-                p0 = np.exp(yhat[treated] - th) * m.smear
+                p0 = full[treated] * np.exp(-th)
                 row.update(pct=np.expm1(th), pct_lo=np.expm1(th - 1.96 * se), pct_hi=np.expm1(th + 1.96 * se),
                            pct_shrunk=np.expm1(shr), clean_price_median=float(np.median(p0)),
                            eur=float(np.median(p0) * np.expm1(th)), eur_shrunk=float(np.median(p0) * np.expm1(shr)))
@@ -433,10 +498,95 @@ def segment_effects(df: pd.DataFrame, overall: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+# ─────────────────────────── value bands ───────────────────────────
+# A fixed-cost repair is a big share of a 2 000 € car and a small share of a
+# 20 000 € one, so a single % does not describe every car. Effects are
+# re-estimated per band of each car's *clean* value — its out-of-fold predicted
+# price with all faults removed. Banding on the sale price itself would push
+# faulty cars into cheaper bands (selection on the outcome).
+
+BANDS = [(0, 1_000, "under 1 000 €"), (1_000, 3_000, "1 000–3 000 €"), (3_000, 5_000, "3 000–5 000 €"),
+         (5_000, 10_000, "5 000–10 000 €"), (10_000, 20_000, "10 000–20 000 €"), (20_000, np.inf, "over 20 000 €")]
+BAND_LABELS = [b[2] for b in BANDS]
+MIN_N_BAND = 20
+
+
+def clean_value_oof(df: pd.DataFrame, spec: list[str], k: int = 5, seed: int = 7) -> pd.Series:
+    """Out-of-fold expected price of each car with every disclosed fault set to 0.
+
+    LightGBM, not the hedonic OLS: on fault-free cars the OLS over-predicts the
+    upper value bands (mean log error −0.17 at 5–10k, −0.27 at 10–20k, −0.41
+    above 20k) while LightGBM stays flat (≈ −0.11, the mean-vs-median smearing
+    gap) in every band. Duan smearing from the out-of-fold residuals."""
+    import lightgbm as lgb
+    from sklearn.model_selection import KFold
+
+    faults = [c for c in spec if c not in NON_FAULTS]
+    X, _ = lgb_frame(df, spec)
+    y = df.log_price.values
+    clean_log, fit_log = np.zeros(len(df)), np.zeros(len(df))
+    for tr, te in KFold(k, shuffle=True, random_state=seed).split(df):
+        g = lgb.LGBMRegressor(**LGB_PARAMS).fit(X.iloc[tr], y[tr])
+        fit_log[te] = g.predict(X.iloc[te])
+        X0 = X.iloc[te].copy()
+        X0[faults] = 0
+        clean_log[te] = g.predict(X0)
+    smear = float(np.mean(np.exp(y - fit_log)))
+    out = pd.Series(np.exp(clean_log) * smear, index=df.index)
+    out.attrs["smear"] = smear
+    return out
+
+
+def value_band(v: pd.Series) -> pd.Series:
+    return pd.cut(v, [b[0] for b in BANDS] + [np.inf], right=False, labels=BAND_LABELS).astype(str)
+
+
+def band_effects(df: pd.DataFrame) -> pd.DataFrame:
+    """Fault effects estimated separately in each clean-value band (fault×band
+    interactions in one FE model; controls and admin flags shared)."""
+    d, _ = fill_numeric(df)
+    Xc, _ = controls(d)
+    band_dum = pd.DataFrame({f"band={b}": (d.band == b).astype(float) for b in BAND_LABELS[1:]}, index=d.index)
+    rows = []
+    for spec, report in ((SPEC_A, ["warning_light_any"]), (SPEC_B, [f for f in SPEC_B if f not in NON_FAULTS])):
+        faults = [f for f in spec if f not in NON_FAULTS]
+        inter = pd.DataFrame({f"{f}@{b}": d[f].astype(float) * (d.band == b) for f in faults for b in BAND_LABELS},
+                             index=d.index)
+        X = pd.concat([Xc, band_dum, d[[f for f in spec if f in NON_FAULTS]].astype(float), inter], axis=1)
+        m = FEOLS().fit(X, d.log_price, d.make_model)
+        used = d.loc[m.used_index]
+        yhat = m.predict_log(X.loc[m.used_index], used.make_model)
+        icols = [c for c in inter.columns if c in m.beta.index]
+        tot = pd.Series(X.loc[m.used_index, icols].values @ m.beta[icols].values, index=used.index)
+        clean_u = clean_prices(m, used, yhat, tot, used.get("clean_value"))
+        full = clean_u * np.exp(tot)
+        for b in BAND_LABELS:
+            inb = used.band == b
+            cols_b = [f"{f}@{b}" for f in faults if f"{f}@{b}" in m.beta.index]
+            base_b = [c.split("@")[0] for c in cols_b]
+            for f in report:
+                col = f"{f}@{b}"
+                t = inb & (used[f] == 1)
+                row = {"flag": f, "band": b, "n_band": int(inb.sum()), "n_faulty": int(t.sum())}
+                if col in m.beta.index and t.any():
+                    bb, se = m.beta[col], m.se[col]
+                    p0 = full[t] * np.exp(-bb)
+                    row.update(pct=np.expm1(bb), pct_lo=np.expm1(bb - 1.96 * se), pct_hi=np.expm1(bb + 1.96 * se),
+                               clean_price_median=float(np.median(p0)),
+                               eur=float(np.mean(p0) * np.expm1(bb)),
+                               eur_lo=float(np.mean(p0) * np.expm1(bb - 1.96 * se)),
+                               eur_hi=float(np.mean(p0) * np.expm1(bb + 1.96 * se)))
+                    row.update(total_discount(m, used.loc[t, base_b], cols_b, clean_u[t]))
+                rows.append(row)
+    out = pd.DataFrame(rows)
+    out["enough_data"] = out.n_faulty >= MIN_N_BAND
+    return out
+
+
 # ─────────────────────────── robustness ───────────────────────────
 
 ROBUST_FLAGS = ["warning_light_any", "light_engine", "timing_belt_due", "gearbox_issue", "clutch_issue",
-                "engine_major", "non_runner", "rust_severe", "crash_damage", "inspection_failed",
+                "engine_failure", "engine_knock", "non_runner", "rust_severe", "crash_damage", "inspection_failed",
                 "windshield_crack"]
 
 
@@ -479,8 +629,15 @@ def main() -> None:
     df = load_huutokaupat()
     log.info("Huutokaupat analysis sample: %d cars, %d make×models", len(df), df.make_model.nunique())
 
-    eff_a, m_a = ols_effects(df, SPEC_A)
-    eff_b, m_b = ols_effects(df, SPEC_B)
+    # Each car's price with every disclosed fault removed (LightGBM, out-of-fold):
+    # used for the value bands and to turn % effects into euros.
+    clean = clean_value_oof(df, SPEC_B)
+    df["clean_value"] = clean
+    df["band"] = value_band(df.clean_value)
+    log.info("clean values done (%.0fs): %s", time.time() - t0, df.band.value_counts().to_dict())
+
+    eff_a, m_a = ols_effects(df, SPEC_A, clean=df.clean_value)
+    eff_b, m_b = ols_effects(df, SPEC_B, clean=df.clean_value)
     log.info("OLS done (%.0fs): n=%d groups=%d", time.time() - t0, m_b.n, m_b.n_groups)
     overall = pd.concat([eff_a[eff_a.flag == "warning_light_any"],
                          eff_b[eff_b.flag != "warning_light_any"]], ignore_index=True)
@@ -495,7 +652,8 @@ def main() -> None:
         lgb_a, _ = lgb_effects(df, SPEC_A, ["warning_light_any"], boot=args.boot)
         lgbe = pd.concat([lgb_a, lgb_b], ignore_index=True).drop(columns="n_faulty")
         overall = overall.merge(lgbe, on="flag", how="left")
-        full_b.booster_.save_model(str(paths.MODEL_DIR / "lgbm_specB.txt"))
+        with open(paths.MODEL_DIR / "lgbm_specB.pkl", "wb") as fh:
+            pickle.dump({"model": full_b, "flags": SPEC_B, "smear": clean.attrs["smear"]}, fh)
         log.info("LightGBM effects done (%.0fs)", time.time() - t0)
     match = matched_effects(df, report_flags)
     overall = overall.merge(match, on="flag", how="left")
@@ -507,6 +665,10 @@ def main() -> None:
     seg.to_csv(paths.REPORTS / "effects_by_segment.csv", index=False)
     log.info("segments done (%.0fs)", time.time() - t0)
 
+    bands = band_effects(df)
+    bands.to_csv(paths.REPORTS / "effects_by_band.csv", index=False)
+    log.info("value bands done (%.0fs): %s", time.time() - t0, df.band.value_counts().to_dict())
+
     rob = robustness(df)
     rob.to_csv(paths.REPORTS / "robustness.csv", index=False)
     log.info("robustness done (%.0fs)", time.time() - t0)
@@ -517,7 +679,9 @@ def main() -> None:
     meta = json.loads((paths.DATA / "features_meta.json").read_text(encoding="utf-8"))
     meta.update(analysis_n=int(len(df)), make_models=int(df.make_model.nunique()),
                 ols_n=int(m_b.n), ols_groups=int(m_b.n_groups),
-                price_median=float(df.price.median()), accepted_share=float(df.accepted.mean()))
+                price_median=float(df.price.median()), accepted_share=float(df.accepted.mean()),
+                lgb_boot=0 if args.skip_ml else args.boot,
+                band_counts={b: int((df.band == b).sum()) for b in BAND_LABELS})
 
     # Secondary: Nettiauto asking prices (text-only flags), if collected.
     if paths.FEATURES_NA.exists():
