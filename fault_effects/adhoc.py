@@ -15,7 +15,7 @@ this flag added:
   * this fault, others held fixed — the fault's own effect;
   * total gap of these cars — vs. the same cars with every disclosed fault
     removed (includes what usually comes with it);
-  * per clean-value band where at least 20 cars match.
+  * by what the car is worth, where at least 20 matching cars are worth about that much.
 """
 
 from __future__ import annotations
@@ -76,7 +76,7 @@ def main() -> None:
         return
 
     df["clean_value"] = M.clean_value_oof(df, M.SPEC_B)
-    df["band"] = M.value_band(df.clean_value)
+
     eff, _ = M.ols_effects(df, M.SPEC_B + [a.name], clean=df.clean_value)
     r = eff.set_index("flag").loc[a.name]
     print(f"\nThis fault, others held fixed: {r.pct:+.1%}  (95% CI {r.pct_lo:+.1%} … {r.pct_hi:+.1%})"
@@ -85,14 +85,17 @@ def main() -> None:
           f"  (they carry {r.other_faults_mean:.1f} other fault flags on average)")
     print(f"Median value of these cars without this fault: {r.clean_price_median:,.0f} €")
 
-    bands = M.band_effects(df, extra=[a.name])
-    bt = bands[bands.flag == a.name]
-    print("\nBy clean-value band (this fault, others held fixed):")
-    for _, b in bt.iterrows():
-        if b.n_faulty >= M.MIN_N_BAND and pd.notna(b.get("pct")):
-            print(f"  {b.band:>16}: {b.eur:+,.0f} € (CI {b.eur_lo:+,.0f} … {b.eur_hi:+,.0f}), {b.pct:+.1%}, n={int(b.n_faulty)}")
+    c = M.curve_effects(df, extra=[a.name])
+    c = c[(c.flag == a.name) & (c.kind == "ref")]
+    print("\nBy what the car is worth without problems (incl. the lights / won't-start / inspection it causes):")
+    for _, r in c.iterrows():
+        head = f"  car worth {r.value:>8,.0f} €:"
+        if not r.supported:
+            print(f"{head} too few cars (n={int(r.support)} worth about that much)")
+        elif r.eur_hi >= 0:
+            print(f"{head} no measurable cost (CI {r.eur_lo:+,.0f} … {r.eur_hi:+,.0f} €)")
         else:
-            print(f"  {b.band:>16}: not enough data (n={int(b.n_faulty)})")
+            print(f"{head} {r.eur:+,.0f} € (CI {r.eur_lo:+,.0f} … {r.eur_hi:+,.0f}), {r.pct:+.1%}")
 
 
 if __name__ == "__main__":

@@ -90,30 +90,32 @@ def main() -> None:
     if a.fault not in ov.index:
         raise SystemExit(f"unknown fault {a.fault!r}; see --list-faults")
     eff = ov.loc[a.fault]
-    band = M.value_band(pd.Series([clean])).iat[0]
     label = F.LABELS.get(a.fault, a.fault)
 
-    # Primary: the effect estimated for cars in this clean-value band.
-    source, pct, lo, hi = "all cars pooled", eff.pct, eff.pct_lo, eff.pct_hi
-    band_path = paths.REPORTS / "effects_by_band.csv"
-    if band_path.exists():
-        bt = pd.read_csv(band_path)
-        r = bt[(bt.flag == a.fault) & (bt.band == band)]
-        if len(r) and r.n_faulty.iat[0] >= M.MIN_N_BAND and pd.notna(r.pct.iat[0]):
-            source = f"cars worth {band} (n_faulty={int(r.n_faulty.iat[0])})"
-            pct, lo, hi = r.pct.iat[0], r.pct_lo.iat[0], r.pct_hi.iat[0]
-        elif len(r):
-            source = f"all cars pooled (band {band} has only {int(r.n_faulty.iat[0])} faulty cars)"
+    # The problem's curve read at this car's clean value (interpolated on log value).
+    curves = pd.read_csv(paths.REPORTS / "effects_curves.csv")
+    g = curves[(curves.flag == a.fault) & (curves.kind == "grid")].sort_values("value")
+
+    def interp(col):
+        return float(np.interp(np.log(clean), np.log(g.value), g[col]))
 
     print(f"\n{a.year} {a.make} {a.model} ({car.fuel.iat[0]}, {car.gear.iat[0]}, {car.km.iat[0]:,.0f} km, "
           f"model row '{car.make_model.iat[0]}')")
-    print(f"  predicted clean auction price  ≈ {clean:,.0f} €  (band {band})")
-    if eff.n_faulty < M.MIN_N or pd.isna(pct):
+    print(f"  predicted price without problems ≈ {clean:,.0f} €")
+    if eff.n_faulty < M.MIN_N or g.empty:
         print(f"  {label}: not enough data (n={int(eff.n_faulty)})")
     else:
-        print(f"  {label}: {clean * pct:+,.0f} €  (95% CI {clean * lo:+,.0f} … {clean * hi:+,.0f} €; "
-              f"{pct:+.1%}; effect from {source})")
-        print(f"  → ≈ {clean * (1 + pct):,.0f} € with the fault, other disclosed faults absent")
+        pct, lo, hi = interp("pct"), interp("pct_lo"), interp("pct_hi")
+        near = g.iloc[(np.log(g.value) - np.log(clean)).abs().argmin()]
+        estimand = near.estimand
+        if not near.supported:
+            print(f"  {label}: too few cars with it worth about {clean:,.0f} € (n={int(near.support)})")
+        elif hi >= 0:
+            print(f"  {label}: no measurable cost at this value (95% CI {clean * lo:+,.0f} … {clean * hi:+,.0f} €)")
+        else:
+            print(f"  {label}: {clean * pct:+,.0f} €  (95% CI {clean * lo:+,.0f} … {clean * hi:+,.0f} €; "
+                  f"{pct:+.1%}; {estimand}; {int(near.support)} cars with it worth about this much)")
+            print(f"  → ≈ {clean * (1 + pct):,.0f} € with the problem")
     seg_path = paths.REPORTS / "effects_by_segment.csv"
     if seg_path.exists():
         seg = pd.read_csv(seg_path)

@@ -57,6 +57,13 @@ TEXT_MODEL_FLAGS = [
 ]
 LIGHT_TYPES = F.LIGHT_FLAGS                      # incl. light_unspecified
 OTHER_FLAGS = F.ADMIN_FLAGS + ["timing_belt_done"]
+# What a buyer sees rather than what is broken: warning lights and the
+# consequences a fault has for how the car can be used or sold. A root cause
+# (failed engine, gearbox, rust, …) is valued *including* these, because they
+# are part of what that fault does to the car.
+SYMPTOM_FLAGS = LIGHT_TYPES + ["warning_light_any", "non_runner", "not_roadworthy", "inspection_failed",
+                               "inspection_lapsed", "project_for_parts"]
+ROOT_FLAGS = [f for f in TEXT_MODEL_FLAGS if f not in SYMPTOM_FLAGS]
 SPEC_A = ["warning_light_any"] + TEXT_MODEL_FLAGS + OTHER_FLAGS
 SPEC_B = LIGHT_TYPES + TEXT_MODEL_FLAGS + OTHER_FLAGS
 
@@ -588,6 +595,88 @@ def band_effects(df: pd.DataFrame, extra: list[str] | None = None) -> pd.DataFra
     return out
 
 
+# ─────────────────────────── value curves ───────────────────────────
+# One smooth curve per problem instead of six separately estimated bands:
+# the % effect may change linearly in log(clean value),
+#     effect(v) = b + g·log(v / 2000 €),   euros(v) = v · (exp(effect(v)) − 1),
+# so cheap and dear cars share information instead of each band standing on a
+# few dozen cars. Two estimands:
+#   * symptoms (lights, won't start, inspection, …) "as seen": every flag in
+#     the model, other problems held fixed;
+#   * root causes "incl. consequences": symptom flags left out, so a failed
+#     engine carries the engine light / won't-start / failed inspection it
+#     causes; other root causes held fixed. Cars whose only disclosures are
+#     symptoms (an engine light with no stated cause) are left out of that
+#     model so they don't sit in the comparison group.
+# A point is reported only where >= MIN_SUPPORT faulty cars have a clean value
+# within a factor 2 of it — elsewhere the curve would be extrapolating.
+
+CURVE_REF = 2000.0
+REF_VALUES = [1000, 2000, 5000, 10000, 20000]
+CURVE_GRID = [float(v) for v in np.round(np.exp(np.linspace(np.log(300), np.log(40000), 61)), 0)]
+MIN_SUPPORT = 20
+
+
+def _curve_fit(df: pd.DataFrame, regressors: list[str], curved: list[str]) -> FEOLS:
+    z = np.log(df.clean_value / CURVE_REF).rename("z")
+    d, _ = fill_numeric(df)
+    Xc, _ = controls(d)
+    inter = pd.DataFrame({f"{f}*z": d[f].astype(float) * z for f in curved}, index=d.index)
+    X = pd.concat([Xc, z, d[regressors].astype(float), inter], axis=1)
+    return FEOLS().fit(X, d.log_price, d.make_model)
+
+
+def curve_models(df: pd.DataFrame, extra: list[str] | None = None) -> dict:
+    """flag -> (fitted model, estimation sample, estimand label)."""
+    extra = list(extra or [])
+    out = {}
+    seen = [f for f in SPEC_B if f not in NON_FAULTS] + extra
+    m = _curve_fit(df, SPEC_B + extra, seen)
+    for f in seen:
+        out[f] = (m, df, "as seen")
+    roots = ROOT_FLAGS + extra
+    has_root = df[roots].max(axis=1) == 1
+    has_sym = df[[f for f in SYMPTOM_FLAGS if f in df]].max(axis=1) == 1
+    rs = df[~(has_sym & ~has_root)]
+    m = _curve_fit(rs, roots + OTHER_FLAGS, roots)
+    for f in roots:
+        out[f] = (m, rs, "incl. consequences")
+    m = _curve_fit(df, ["warning_light_any"] + ROOT_FLAGS + OTHER_FLAGS, ["warning_light_any"] + ROOT_FLAGS)
+    out["warning_light_any"] = (m, df, "as seen")
+    return out
+
+
+def curve_effects(df: pd.DataFrame, extra: list[str] | None = None) -> pd.DataFrame:
+    rows = []
+    for f, (m, sample, estimand) in curve_models(df, extra).items():
+        if f not in m.beta.index or f"{f}*z" not in m.beta.index:
+            continue
+        cv = sample.loc[sample[f] == 1, "clean_value"]
+        for kind, values in (("ref", REF_VALUES), ("grid", CURVE_GRID)):
+            for v in values:
+                zz = float(np.log(v / CURVE_REF))
+                eff = m.beta[f] + m.beta[f"{f}*z"] * zz
+                se = m.lin_se(pd.Series([1.0, zz], index=[f, f"{f}*z"]))
+                lo, hi = eff - 1.96 * se, eff + 1.96 * se
+                support = int(((cv >= v / 2) & (cv <= v * 2)).sum())
+                rows.append({"flag": f, "estimand": estimand, "kind": kind, "value": v, "n_faulty": int(len(cv)),
+                             "support": support, "supported": support >= MIN_SUPPORT,
+                             "pct": np.expm1(eff), "pct_lo": np.expm1(lo), "pct_hi": np.expm1(hi),
+                             "eur": v * np.expm1(eff), "eur_lo": v * np.expm1(lo), "eur_hi": v * np.expm1(hi),
+                             "clear": bool(hi < 0 or lo > 0)})
+    return pd.DataFrame(rows)
+
+
+def consequence_effects(df: pd.DataFrame) -> pd.DataFrame:
+    """Pooled % effect of each root cause incl. its consequences (no curve)."""
+    roots = ROOT_FLAGS
+    has_root = df[roots].max(axis=1) == 1
+    has_sym = df[[f for f in SYMPTOM_FLAGS if f in df]].max(axis=1) == 1
+    eff, _ = ols_effects(df[~(has_sym & ~has_root)], roots + OTHER_FLAGS, clean=df.clean_value)
+    eff = eff[eff.flag.isin(roots)][["flag", "n_faulty", "pct", "pct_lo", "pct_hi", "eur", "eur_lo", "eur_hi"]]
+    return eff.rename(columns={c: f"incl_{c}" for c in eff.columns if c != "flag"})
+
+
 # ─────────────────────────── robustness ───────────────────────────
 
 ROBUST_FLAGS = ["warning_light_any", "light_engine", "timing_belt_due", "gearbox_issue", "clutch_issue",
@@ -662,8 +751,13 @@ def main() -> None:
         log.info("LightGBM effects done (%.0fs)", time.time() - t0)
     match = matched_effects(df, report_flags)
     overall = overall.merge(match, on="flag", how="left")
+    overall = overall.merge(consequence_effects(df), on="flag", how="left")
     overall["label"] = overall.flag.map(F.LABELS)
     overall["enough_data"] = overall.n_faulty >= MIN_N
+
+    curves = curve_effects(df)
+    curves.to_csv(paths.REPORTS / "effects_curves.csv", index=False)
+    log.info("value curves done (%.0fs)", time.time() - t0)
     overall.to_csv(paths.REPORTS / "effects_overall.csv", index=False)
 
     seg = segment_effects(df, overall)
