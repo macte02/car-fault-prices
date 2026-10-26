@@ -170,6 +170,7 @@ def main() -> None:
                f"main table but with every fault interacted with the band.\n")
     out.append(md_table(band_table(bands, "eur")) + "\n")
     out.append("![Euro effect by clean-value band](fault_effects_bands.png)\n")
+    out.append("![What a problem costs, three value bands](chart_cost_by_band.png)\n")
     out.append("95% intervals of the euro effects:\n")
     out.append(md_table(band_table(bands, "eur_ci")) + "\n")
     out.append("The same as a percentage of the car's clean price:\n")
@@ -178,6 +179,7 @@ def main() -> None:
     # ── engine vs gearbox
     ef, ek, gb = o.loc["engine_failure"], o.loc["engine_knock"], o.loc["gearbox_issue"]
     out.append("## Why can a gearbox fault look bigger than engine damage?\n")
+    out.append("![Own effect vs. total gap](chart_own_vs_total.png)\n")
     out.append(
         "Two different questions give two different numbers:\n\n"
         "- **This fault, others held fixed** (the main column): how much the fault itself moves the price when "
@@ -200,6 +202,7 @@ def main() -> None:
         "they are now separate.\n")
 
     out.append("## All faults (pooled over all cars)\n")
+    out.append("![Which warning light matters](chart_warning_lights.png)\n")
     boot = meta.get("lgb_boot", 0)
     out.append("This fault = hedonic OLS on log(price) with make×model fixed effects; 95% CIs use the larger of "
                "make×model-clustered and heteroskedasticity-robust standard errors. ≈ € = that effect on the "
@@ -213,6 +216,7 @@ def main() -> None:
     out.append(md_table(effects_table(ov, HEADLINE)) + "\n")
 
     out.append("### Per make / model (largest segments)\n")
+    out.append("![Engine light by make and model](chart_engine_light_models.png)\n")
     out.append(f"Segment-specific % effects from the OLS with fault×segment interactions, shown **shrunk toward "
                f"the overall effect** (empirical Bayes) because single-segment estimates are noisy; raw estimates "
                f"and CIs are in `effects_by_segment.csv`. `n/e` = fewer than {M.MIN_N_SEG} faulty cars in that "

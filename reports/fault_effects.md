@@ -31,6 +31,8 @@ Cars are banded by their **clean value**: the price LightGBM predicts for that c
 
 ![Euro effect by clean-value band](fault_effects_bands.png)
 
+![What a problem costs, three value bands](chart_cost_by_band.png)
+
 95% intervals of the euro effects:
 
 | Fault | under 1 000 € | 1 000–3 000 € | 3 000–5 000 € | 5 000–10 000 € | 10 000–20 000 € | over 20 000 € |
@@ -75,6 +77,8 @@ The same as a percentage of the car's clean price:
 
 ## Why can a gearbox fault look bigger than engine damage?
 
+![Own effect vs. total gap](chart_own_vs_total.png)
+
 Two different questions give two different numbers:
 
 - **This fault, others held fixed** (the main column): how much the fault itself moves the price when everything else the seller disclosed is the same. A car with a failed engine usually *also* gets flagged "won't start", "not roadworthy", "engine light on" or "sold for parts" — those flags take their own share of the discount, so the engine flag's own coefficient is smaller.
@@ -83,6 +87,8 @@ Two different questions give two different numbers:
 Engine failure: −24.7% on its own, but these cars sell −51.3% (−2 528 €) below a clean car; they carry 2.3 other fault flags on average. Gearbox problem: −33.1% on its own, −49.0% (−1 627 €) in total, 2.0 other flags. Engine knocking noise: −29.6% on its own, −43.7% total. In euros, an engine failure on its own costs about as much as a gearbox problem (−926 € vs −924 €), but together with what usually comes with it much more (−2 528 € vs −1 627 €); it also sits on pricier cars (median clean value 2 506 € vs 2 135 €). The two % effects' intervals overlap ([−32.4, −16.2] vs [−37.6, −28.3]). The earlier single "major engine damage" flag mixed outright failures with mere knocking noises; they are now separate.
 
 ## All faults (pooled over all cars)
+
+![Which warning light matters](chart_warning_lights.png)
 
 This fault = hedonic OLS on log(price) with make×model fixed effects; 95% CIs use the larger of make×model-clustered and heteroskedasticity-robust standard errors. ≈ € = that effect on the faulty cars' own value without this fault (LightGBM clean value, their other faults kept). Total gap = see the section above. LightGBM = out-of-bag counterfactual (flag on vs. off), 30 bootstrap refits. Matched = same make×model, year, fuel, gearbox and 50 000 km band; cars whose *only* major fault is this one vs. cars with none. Below 30 faulty cars a row says *not enough data*. A pooled % hides that the euro effect grows with the car's value — use the band tables for euros.
 
@@ -124,6 +130,8 @@ This fault = hedonic OLS on log(price) with make×model fixed effects; 95% CIs u
 | Sold as project / for parts / to repair | 295 | **−14.9%** [−21.2, −8.0] | −387 € [−554, −207] | −45.0% · −1 716 € | −15.4% [−18.7, −10.8] | −35.3% (n=30) |
 
 ### Per make / model (largest segments)
+
+![Engine light by make and model](chart_engine_light_models.png)
 
 Segment-specific % effects from the OLS with fault×segment interactions, shown **shrunk toward the overall effect** (empirical Bayes) because single-segment estimates are noisy; raw estimates and CIs are in `effects_by_segment.csv`. `n/e` = fewer than 15 faulty cars in that segment (count in brackets).
 
