@@ -17,11 +17,10 @@ MODEL_DIR = DATA / "model"
 
 
 def huutokaupat_db() -> Path:
-    """Same lookup as baana_server.py: env override, else the sibling
-    nettiauto-watcher checkout. The archive is read-only from here."""
+    """Huutokaupat archive: env override, else data/huutokaupat.db. Read-only from here."""
     return Path(
         os.environ.get("NETTIAUTO_HUUTOKAUPAT_DB")
-        or (REPO.parent / "nettiauto-watcher" / "huutokaupat.db")
+        or (DATA / "huutokaupat.db")
     )
 
 

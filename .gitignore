@@ -1,0 +1,7 @@
+# raw scraped data and model artifacts stay local
+data/
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.log

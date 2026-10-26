@@ -239,7 +239,7 @@ def main() -> None:
 
     if na is not None:
         out.append("## Cross-check on Nettiauto asking prices\n")
-        out.append(f"{num(meta.get('nettiauto_n', 0))} private-seller listings under 5 000 € (the watcher's saved "
+        out.append(f"{num(meta.get('nettiauto_n', 0))} private-seller listings under 5 000 € (a saved "
                    "search), problems from the free-text description only. Asking prices, not sale prices; "
                    "small sample — indicative only. *Alone* % effects.\n")
         nao = na.set_index("flag")

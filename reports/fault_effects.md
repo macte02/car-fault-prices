@@ -209,7 +209,7 @@ Rules were checked by hand on fresh random samples drawn *after* each rule's las
 
 ## Cross-check on Nettiauto asking prices
 
-540 private-seller listings under 5 000 € (the watcher's saved search), problems from the free-text description only. Asking prices, not sale prices; small sample — indicative only. *Alone* % effects.
+540 private-seller listings under 5 000 € (a saved search), problems from the free-text description only. Asking prices, not sale prices; small sample — indicative only. *Alone* % effects.
 
 | Problem | Listings with it | Effect |
 |---|---|---|

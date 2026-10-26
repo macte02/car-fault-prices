@@ -239,7 +239,7 @@ def build_nettiauto(db_path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--huutokaupat-db", type=Path, default=None,
-                    help="default: $NETTIAUTO_HUUTOKAUPAT_DB or ../nettiauto-watcher/huutokaupat.db")
+                    help="default: $NETTIAUTO_HUUTOKAUPAT_DB or data/huutokaupat.db")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     paths.ensure_dirs()
@@ -250,7 +250,7 @@ def main() -> None:
     hk, hk_text = build_huutokaupat(db_path)
     hk.to_csv(paths.FEATURES_HK, index=False)
     hk_text.to_csv(paths.DATA / "text_huutokaupat.csv.gz", index=False)
-    meta = {"huutokaupat_db": str(db_path), "rows": len(hk),
+    meta = {"huutokaupat_db": db_path.name, "rows": len(hk),
             "end_min": hk["end_date"].min(), "end_max": hk["end_date"].max(),
             "built": date.today().isoformat()}
     log.info("Huutokaupat: %d passenger-car rows (%s .. %s)", len(hk), meta["end_min"], meta["end_max"])

@@ -1,16 +1,13 @@
 """Polite, resumable Nettiauto collector for the fault-effect study.
 
-Walks a saved search (default: the watcher's own private-seller search,
-`haku=P37140032` — private sellers, < 5000 €, < 275 000 km), stores every
+Walks a saved search (default: `haku=P37140032` — private sellers,
+< 5000 €, < 275 000 km), stores every
 result card, then fetches each ad's detail page once for the free-text
 description ("Lisätiedot") and the structured spec boxes (Katsastettu,
 Mittarilukema, ...).
 
-Reuses nettiauto.parse_search_results() for the cards. Uses an *anonymous*
-httpx client rather than nettiauto.fetch(): for-sale listings are public, and
-the watcher's saved session cookies turn public pages into 401s once they
-expire — which would make nettiauto.fetch() try to relaunch Chrome / CDP.
-Nothing here touches cache.db or nettiauto_session.json.
+Cards are parsed by nettiauto_cards.parse_search_results(). Uses an
+anonymous httpx client: for-sale listings are public, no login needed.
 
 Rate: one request at a time with a 2.5–5 s jittered pause (≈ 15 req/min),
 backing off on 429/5xx. Safe to Ctrl+C and re-run; it resumes where it left off.
@@ -33,8 +30,7 @@ from dataclasses import asdict
 import httpx
 from bs4 import BeautifulSoup
 
-import nettiauto
-from fault_effects import paths
+from fault_effects import nettiauto_cards, paths
 
 log = logging.getLogger("collect_nettiauto")
 
@@ -68,7 +64,7 @@ class Polite:
 
     def __init__(self, min_wait: float, max_wait: float):
         self.min_wait, self.max_wait = min_wait, max_wait
-        self.client = httpx.Client(headers=nettiauto.DEFAULT_HEADERS,
+        self.client = httpx.Client(headers=nettiauto_cards.DEFAULT_HEADERS,
                                    follow_redirects=True, timeout=25.0)
         self._last = 0.0
 
@@ -109,7 +105,7 @@ def walk_search(c: sqlite3.Connection, http: Polite, search_url: str, max_pages:
         if r is None or r.status_code != 200:
             log.warning("page %d failed (%s); stopping walk", page, r.status_code if r else "no response")
             break
-        cards = nettiauto.parse_search_results(r.text)
+        cards = nettiauto_cards.parse_search_results(r.text)
         if not cards:
             log.info("page %d empty; end of results", page)
             break
@@ -133,8 +129,7 @@ def walk_search(c: sqlite3.Connection, http: Polite, search_url: str, max_pages:
 def parse_detail(page_html: str) -> dict:
     """Title / USP / description + every labelled spec box on the page.
 
-    Description extraction follows nettiauto-watcher's parse_comp_quality_text:
-    the section whose mobile title is "Lisätiedot", preferring #fullNote."""
+    Description: the section whose mobile title is "Lisätiedot", preferring #fullNote."""
     soup = BeautifulSoup(page_html, "lxml")
 
     def txt(el) -> str:

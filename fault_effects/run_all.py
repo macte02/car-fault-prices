@@ -1,6 +1,6 @@
 """features → rule tests/validation → model → report, in one go.
 
-    python -m fault_effects.run_all --huutokaupat-db ../nettiauto-watcher/huutokaupat.db
+    python -m fault_effects.run_all --huutokaupat-db data/huutokaupat.db
 
 Collection (`collect_nettiauto`) is separate because it is slow by design.
 """
